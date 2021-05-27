@@ -5,71 +5,80 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"sync"
 )
 
-func NewFilter(stream io.Reader, command []string,
-	options ...FilterOption) (io.Reader, error) {
-
-	if len(command) == 0 {
-		return nil, errors.New("command must not be empty")
-	}
-
-	var f filter
-	for _, option := range options {
-		option(&f)
-	}
-
+func NewLineFilter(stream io.Reader, threads int, predicate Predicate) (io.Reader, error) {
 	r, w := io.Pipe()
 
 	go func() {
 		defer w.Close()
-
 		scanner := bufio.NewScanner(stream)
-		for scanner.Scan() {
-			line := scanner.Text()
 
-			var parsed []string
+		ch := make(chan string)
 
-			switch f.token {
-			case "":
-				parsed = append(append([]string{}, command...), line)
-			default:
-				parsed = replace(command, f.token, line)
-			}
+		var wg sync.WaitGroup
+		for i := 0; i < threads; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
 
-			cmd := exec.Command(parsed[0], parsed[1:]...)
-			if err := cmd.Run(); err != nil {
-				var as *exec.ExitError
-				if errors.As(err, &as) {
-					continue
+				for line := range ch {
+					ok, err := predicate(line)
+					if err != nil {
+						w.CloseWithError(err)
+						return
+					}
+
+					if !ok {
+						continue
+					}
+
+					if _, err := io.WriteString(w, line+"\n"); err != nil {
+						w.CloseWithError(err)
+						return
+					}
 				}
-
-				w.CloseWithError(err)
-				return
-			}
-
-			if _, err := io.WriteString(w, line+"\n"); err != nil {
-				w.CloseWithError(err)
-				return
-			}
+			}()
 		}
+
+		for scanner.Scan() {
+			ch <- scanner.Text()
+		}
+		close(ch)
+
+		wg.Wait()
+
+		w.Close()
 	}()
 
 	return r, nil
 }
 
-type Predacate func(line string) (bool, error)
+type Predicate func(line string) (bool, error)
 
-type FilterOption func(f *filter)
+func CmdPredicate(command []string, token string) Predicate {
+	return func(line string) (bool, error) {
+		var parsed []string
+		switch token {
+		case "":
+			parsed = append(append([]string{}, command...), line)
+		default:
+			parsed = replace(command, token, line)
+		}
 
-func WithToken(token string) FilterOption {
-	return func(f *filter) {
-		f.token = token
+		cmd := exec.Command(parsed[0], parsed[1:]...)
+		if err := cmd.Run(); err != nil {
+			var as *exec.ExitError
+			if errors.As(err, &as) {
+				return false, nil
+			}
+
+			return false, err
+		}
+
+		return true, nil
 	}
-}
-
-type filter struct {
-	token string
 }
 
 func replace(slice []string, find, replace string) []string {
