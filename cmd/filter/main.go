@@ -29,7 +29,7 @@ func main() {
 		return
 	}
 
-	f, err := filter.NewLineFilter(os.Stdin, *threads, filter.CmdPredicate(command, *token))
+	f, err := filter.Filter(os.Stdin, *threads, filter.CmdPredicate(command, *token))
 	if err != nil {
 		log.Println(err)
 		return

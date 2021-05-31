@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-func NewLineFilter(stream io.Reader, threads int, predicate Predicate) (io.Reader, error) {
+func Filter(stream io.Reader, threads int, predicate Predicate) (io.Reader, error) {
 	r, w := io.Pipe()
 
 	go func() {
